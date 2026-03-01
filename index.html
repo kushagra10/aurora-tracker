@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -165,15 +166,32 @@ async function loadData(manual) {
 
   var meteoURL = "https://api.open-meteo.com/v1/forecast?latitude="+loc.lat+"&longitude="+loc.lon+"&current=cloud_cover,wind_speed_10m,wind_direction_10m,relative_humidity_2m,visibility&daily=sunrise,sunset&timezone=auto";
   var noaaBase = "https://services.swpc.noaa.gov/json/";
-  var proxy    = "https://api.allorigins.win/raw?url=";
+  var proxies  = [
+    "https://corsproxy.io/?",
+    "https://api.allorigins.win/raw?url=",
+    "https://thingproxy.freeboard.io/fetch/"
+  ];
 
   var kp=4, fc=[], sw=450, bz=-3, cloud=20, wind=10, dir=180, humidity=55, vis=20, sunrise="06:00", sunset="18:00";
   var moon = moonPhase();
   var errors = [];
 
+  async function proxyFetch(path) {
+    for (var i=0; i<proxies.length; i++) {
+      try {
+        var url = proxies[i] + encodeURIComponent(noaaBase + path);
+        var r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+        if (!r.ok) continue;
+        var d = await r.json();
+        if (d && (Array.isArray(d) ? d.length > 0 : true)) return d;
+      } catch(e) { continue; }
+    }
+    return null;
+  }
+
   // Weather — Open-Meteo (no CORS issues)
   try {
-    var mr = await fetch(meteoURL);
+    var mr = await fetch(meteoURL, {signal: AbortSignal.timeout(8000)});
     var md = await mr.json();
     var c  = md.current;
     cloud    = c.cloud_cover || 0;
@@ -185,32 +203,18 @@ async function loadData(manual) {
     sunset   = (md.daily && md.daily.sunset  && md.daily.sunset[0])  ? md.daily.sunset[0].slice(11)  : "18:00";
   } catch(e) { errors.push("Weather"); }
 
-  // NOAA via allorigins proxy
-  try {
-    var kr = await fetch(proxy + encodeURIComponent(noaaBase+"planetary_k_index_1m.json"));
-    var ka = await kr.json();
-    kp = parseFloat(ka[ka.length-1].kp_index || 4);
-  } catch(e) { errors.push("KP"); }
+  // NOAA — tries 3 proxies automatically, moves to next if one fails
+  var ka = await proxyFetch("planetary_k_index_1m.json");
+  if (ka) { kp = parseFloat(ka[ka.length-1].kp_index || 4); } else { errors.push("KP"); }
 
-  try {
-    var fr = await fetch(proxy + encodeURIComponent(noaaBase+"planetary_k_index_forecast.json"));
-    var fa = await fr.json();
-    fc = fa.filter(function(d){return d.tag==="predicted"||d.tag==="estimated";}).slice(0,12).map(function(d){return parseFloat(d.kp||0);});
-  } catch(e) { errors.push("Forecast"); }
+  var fa = await proxyFetch("planetary_k_index_forecast.json");
+  if (fa) { fc = fa.filter(function(d){return d.tag==="predicted"||d.tag==="estimated";}).slice(0,12).map(function(d){return parseFloat(d.kp||0);}); } else { errors.push("Forecast"); }
 
-  try {
-    var wr = await fetch(proxy + encodeURIComponent(noaaBase+"rtsw/rtsw_wind_1m.json"));
-    var wa = await wr.json();
-    var wf = wa.filter(function(d){return d.proton_speed!=null;});
-    if (wf.length) sw = Math.round(wf[wf.length-1].proton_speed);
-  } catch(e) { errors.push("Solar Wind"); }
+  var wa = await proxyFetch("rtsw/rtsw_wind_1m.json");
+  if (wa) { var wf=wa.filter(function(d){return d.proton_speed!=null;}); if(wf.length) sw=Math.round(wf[wf.length-1].proton_speed); } else { errors.push("Solar Wind"); }
 
-  try {
-    var mgr = await fetch(proxy + encodeURIComponent(noaaBase+"rtsw/rtsw_mag_1m.json"));
-    var mga = await mgr.json();
-    var mgf = mga.filter(function(d){return d.bz_gsm!=null;});
-    if (mgf.length) bz = parseFloat(mgf[mgf.length-1].bz_gsm);
-  } catch(e) { errors.push("Bz/Mag"); }
+  var mga = await proxyFetch("rtsw/rtsw_mag_1m.json");
+  if (mga) { var mgf=mga.filter(function(d){return d.bz_gsm!=null;}); if(mgf.length) bz=parseFloat(mgf[mgf.length-1].bz_gsm); } else { errors.push("Bz/Mag"); }
 
   appData = {kp:kp,fc:fc,sw:sw,bz:bz,cloud:cloud,wind:wind,dir:dir,humidity:humidity,vis:vis,sunrise:sunrise,sunset:sunset,moon:moon,score:calcScore(kp,cloud,wind,bz,sw,moon.p)};
 
@@ -469,5 +473,6 @@ document.getElementById("refresh-btn").addEventListener("click", function(e){
   loadData(true);
 });
 </script>
+
 </body>
 </html>
